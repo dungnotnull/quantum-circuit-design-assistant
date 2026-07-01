@@ -1,0 +1,85 @@
+name: Quantum Knowledge Updater
+
+on:
+  schedule:
+    # Run every Sunday at 02:00 UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (fetch but do not write)'
+        required: false
+        type: boolean
+        default: false
+      source:
+        description: 'Run only specific source (e.g., arxiv_quant_ph_recent)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  update-knowledge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install crawl4ai feedparser beautifulsoup4 lxml aiohttp
+
+      - name: Run knowledge updater
+        run: |
+          DRY_RUN_FLAG="${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}"
+          SOURCE_FLAG="${{ github.event.inputs.source && format('--source {0}', github.event.inputs.source) || '' }}"
+          python tools/knowledge_updater.py $DRY_RUN_FLAG $SOURCE_FLAG
+
+      - name: Check for changes
+        id: verify_changes
+        run: |
+          if git diff --quiet SECOND-KNOWLEDGE-BRAIN.md; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No new entries to add"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "New entries detected"
+          fi
+
+      - name: Commit changes
+        if: steps.verify_changes.outputs.changed == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add SECOND-KNOWLEDGE-BRAIN.md tools/seen_hashes.json tools/updater.log
+          git diff --cached SECOND-KNOWLEDGE-BRAIN.md
+          git commit -m "Auto-update: Quantum computing knowledge base $(date +'%Y-%m-%d')"
+          git push
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Knowledge Updater Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry Run:** ${{ github.event.inputs.dry_run == 'true' || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source:** ${{ github.event.inputs.source || 'ALL' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Changed:** ${{ steps.verify_changes.outputs.changed }}" >> $GITHUB_STEP_SUMMARY
+          if [ -f tools/updater.log ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Log Output (last 50 lines)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -50 tools/updater.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
